@@ -1,0 +1,26 @@
+{
+  "name": "nexus-core-day4",
+  "version": "1.0.0",
+  "description": "",
+  "main": "embed_chunks.js",
+  "type": "module",
+  "scripts": {
+    "embed": "node embed_chunks.js",
+    "search": "node search_chunks.js",
+    "ask": "node ask.js",
+    "agent": "node agent_orchestrator.js",
+    "server": "node tool_server.js",
+    "client": "node orchestrator_client.js",
+    "start": "node tool_server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.106.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "openai": "^6.39.0"
+  }
+}
