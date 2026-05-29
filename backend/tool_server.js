@@ -250,6 +250,74 @@ app.get('/', (req, res) => {
     ]
   });
 });
+app.post('/agent_answer', async (req, res) => {
+  try {
+    const { user_question, tenant_id, match_count = 3 } = req.body;
+
+    if (!user_question || !tenant_id) {
+      return res.status(400).json({
+        error: 'Missing user_question or tenant_id',
+      });
+    }
+
+    const queryEmbedding = await createEmbedding(user_question);
+
+    const { data: chunks, error: searchError } = await supabase.rpc('match_knowledge_base', {
+      query_embedding: queryEmbedding,
+      target_tenant_id: tenant_id,
+      match_count,
+    });
+
+    if (searchError) {
+      return res.status(500).json({
+        error: searchError.message,
+      });
+    }
+
+    const context = formatKnowledgeContext(chunks);
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4.1-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `
+You are a helpful internal company assistant.
+
+Answer the user's question using only the provided internal context.
+If the internal context does not contain enough information, say you do not have enough information from the internal documents.
+Do not invent policies, services, prices, guarantees, or procedures.
+Keep the answer clear and useful.
+          `.trim(),
+        },
+        {
+          role: 'user',
+          content: `
+Internal Context:
+${context}
+
+User Question:
+${user_question}
+          `.trim(),
+        },
+      ],
+    });
+
+    res.json({
+      tool: 'agent_answer',
+      user_question,
+      tenant_id,
+      chunks,
+      formatted_context: context,
+      answer: response.choices[0].message.content,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
 
 app.listen(PORT, () => {
   console.log(`Tool server running at http://localhost:${PORT}`);
