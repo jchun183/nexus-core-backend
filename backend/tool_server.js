@@ -180,6 +180,30 @@ app.post('/agent_outreach', async (req, res) => {
 
     const context = formatKnowledgeContext(chunks);
 
+    const bestSimilarity = chunks && chunks.length > 0 ? chunks[0].similarity : 0;
+
+if (!chunks || chunks.length === 0 || bestSimilarity < 0.25) {
+  return res.json({
+    tool: 'agent_answer',
+    user_question,
+    tenant_id,
+    chunks: chunks || [],
+    formatted_context: context,
+    answer: 'I do not have enough information from the internal documents to answer that.',
+  });
+}
+
+    if (!chunks || chunks.length === 0) {
+  return res.json({
+    tool: 'agent_outreach',
+    user_request,
+    tenant_id,
+    chunks: [],
+    formatted_context: context,
+    email: 'I do not have enough information from the internal documents to draft a grounded outreach email.',
+  });
+}
+
     const response = await openai.chat.completions.create({
       model: 'gpt-4.1-mini',
       messages: [
@@ -276,6 +300,31 @@ app.post('/agent_answer', async (req, res) => {
 
     const context = formatKnowledgeContext(chunks);
 
+    const bestSimilarity = chunks && chunks.length > 0 ? chunks[0].similarity : 0;
+
+if (!chunks || chunks.length === 0 || bestSimilarity < 0.25) {
+  return res.json({
+    tool: 'agent_answer',
+    user_question,
+    tenant_id,
+    chunks: chunks || [],
+    formatted_context: context,
+    answer: 'I do not have enough information from the internal documents to answer that.',
+  });
+}
+
+
+      if (!chunks || chunks.length === 0) {
+    return res.json({
+      tool: 'agent_answer',
+      user_question,
+      tenant_id,
+      chunks: [],
+      formatted_context: context,
+      answer: 'I do not have enough information from the internal documents to answer that.',
+    });
+  }
+
     const response = await openai.chat.completions.create({
       model: 'gpt-4.1-mini',
       messages: [
@@ -318,6 +367,203 @@ ${user_question}
   }
 });
 
+app.get('/knowledge_sources', async (req, res) => {
+  try {
+    const { tenant_id } = req.query;
+
+    if (!tenant_id) {
+      return res.status(400).json({
+        error: 'Missing tenant_id',
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('knowledge_base')
+      .select('metadata, tenant_id')
+      .eq('tenant_id', tenant_id);
+
+    if (error) {
+      return res.status(500).json({
+        error: error.message,
+      });
+    }
+
+    const sourceMap = new Map();
+
+    for (const row of data) {
+      const metadata = row.metadata || {};
+      const source = metadata.source || 'unknown source';
+      const sourceType = metadata.source_type || 'unknown';
+      const chunkStrategy = metadata.chunk_strategy || 'unknown';
+      const ingestedAt = metadata.ingested_at || null;
+
+      if (!sourceMap.has(source)) {
+        sourceMap.set(source, {
+          source,
+          source_type: sourceType,
+          chunk_strategy: chunkStrategy,
+          chunk_count: 0,
+          last_ingested_at: ingestedAt,
+        });
+      }
+
+      const sourceEntry = sourceMap.get(source);
+      sourceEntry.chunk_count += 1;
+
+      if (ingestedAt && (!sourceEntry.last_ingested_at || ingestedAt > sourceEntry.last_ingested_at)) {
+        sourceEntry.last_ingested_at = ingestedAt;
+      }
+    }
+
+    const sources = Array.from(sourceMap.values()).sort((a, b) => {
+      return a.source.localeCompare(b.source);
+    });
+
+    res.json({
+      tenant_id,
+      sources,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
+app.get('/tenants', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('tenants')
+      .select('id, company_name, membership_active, created_at')
+      .order('company_name', { ascending: true });
+
+    if (error) {
+      return res.status(500).json({
+        error: error.message,
+      });
+    }
+
+    res.json({
+      tenants: data || [],
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
+app.post('/tenants', async (req, res) => {
+  try {
+    const { company_name, name } = req.body;
+
+    const finalCompanyName = company_name || name;
+
+    if (!finalCompanyName) {
+      return res.status(400).json({
+        error: 'Missing company_name',
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('tenants')
+      .insert({
+        company_name: finalCompanyName,
+        membership_active: true,
+      })
+      .select('id, company_name, membership_active, created_at')
+      .single();
+
+    if (error) {
+      return res.status(500).json({
+        error: error.message,
+      });
+    }
+
+    res.json({
+      tenant: data,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
+
+app.post('/ingest_document', async (req, res) => {
+  try {
+    const { tenant_id, source, source_type, raw_text, url } = req.body;
+
+    if (!tenant_id || !source || !source_type) {
+      return res.status(400).json({
+        error: 'Missing tenant_id, source, or source_type',
+      });
+    }
+
+    if ((source_type === 'text' || source_type === 'pdf_text') && !raw_text) {
+      return res.status(400).json({
+        error: 'raw_text is required for text and pdf_text ingestion',
+      });
+    }
+
+    if (source_type === 'website' && !url) {
+      return res.status(400).json({
+        error: 'url is required for website ingestion',
+      });
+    }
+
+    const n8nWebhookUrl = process.env.N8N_INGEST_WEBHOOK_URL;
+
+    if (!n8nWebhookUrl) {
+      return res.status(500).json({
+        error: 'N8N_INGEST_WEBHOOK_URL is not configured on the backend',
+      });
+    }
+
+    const n8nResponse = await fetch(n8nWebhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        tenant_id,
+        source,
+        source_type,
+        raw_text,
+        url,
+      }),
+    });
+
+    const responseText = await n8nResponse.text();
+
+    if (!n8nResponse.ok) {
+      return res.status(500).json({
+        error: 'n8n ingestion failed',
+        details: responseText,
+      });
+    }
+
+    let parsedResponse;
+
+    try {
+      parsedResponse = JSON.parse(responseText);
+    } catch {
+      parsedResponse = {
+        message: responseText,
+      };
+    }
+
+    res.json({
+      status: 'success',
+      message: 'Document sent to ingestion pipeline',
+      n8n: parsedResponse,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+    });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Tool server running at http://localhost:${PORT}`);
